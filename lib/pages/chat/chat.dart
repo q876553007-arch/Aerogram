@@ -584,16 +584,13 @@ class ChatController extends State<ChatPageWithRoom>
     setReadMarker();
   }
 
-  Future<void>? _setReadMarkerFuture;
+  String? _setReadMarkerEventId;
 
   void setReadMarker({String? eventId}) {
     // Do not send read markers when app is not in foreground
     if (WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed) {
       return;
     }
-
-    // We are already setting a read marker
-    if (_setReadMarkerFuture != null) return;
 
     final setOnLatestEvent = eventId == null;
 
@@ -614,11 +611,20 @@ class ChatController extends State<ChatPageWithRoom>
       return;
     }
 
-    eventId ??= timeline.events
-        .firstWhereOrNull(
-          (event) => room.client.pushruleEvaluator.match(event).notify,
-        )
-        ?.eventId;
+    eventId ??= timeline.events.firstWhereOrNull((event) {
+      if (event.eventId == room.lastEvent?.eventId) return true;
+      if (room.client.pushruleEvaluator.match(event).notify) {
+        return true;
+      }
+      final original = event.originalSource;
+      if (original != null &&
+          room.client.pushruleEvaluator
+              .match(Event.fromMatrixEvent(original, room))
+              .notify) {
+        return true;
+      }
+      return false;
+    })?.eventId;
 
     if (setOnLatestEvent && (room.hasNewMessages || room.isUnread)) {
       eventId ??=
@@ -630,6 +636,9 @@ class ChatController extends State<ChatPageWithRoom>
 
     // This is a sending event, we do not set a readmarker yet
     if (eventId.isValidMatrixIdStrict() == false) return;
+
+    // We are already setting a read marker on this event
+    if (_setReadMarkerEventId == eventId) return;
 
     // Already set a read marker on this event
     if (room.fullyRead == eventId && !setOnLatestEvent) return;
@@ -643,14 +652,15 @@ class ChatController extends State<ChatPageWithRoom>
     }
 
     Logs().d('Set read marker...', eventId);
+    _setReadMarkerEventId = eventId;
     // ignore: unawaited_futures
-    _setReadMarkerFuture = timeline
+    timeline
         .setReadMarker(
           eventId: eventId,
           public: AppSettings.sendPublicReadReceipts.value,
         )
         .whenComplete(() {
-          _setReadMarkerFuture = null;
+          if (_setReadMarkerEventId == eventId) _setReadMarkerEventId = null;
         });
   }
 
@@ -1446,11 +1456,14 @@ class ChatController extends State<ChatPageWithRoom>
     room.client.getConfig();
 
     switch (choice) {
-      case AddPopupMenuActions.media:
-        openGalleryAction();
-        return;
       case AddPopupMenuActions.file:
         sendFileAction();
+        return;
+      case AddPopupMenuActions.image:
+        sendFileAction(type: FileType.image);
+        return;
+      case AddPopupMenuActions.video:
+        sendFileAction(type: FileType.video);
         return;
       case AddPopupMenuActions.poll:
         showAdaptiveBottomSheet(
@@ -1674,7 +1687,8 @@ class ChatController extends State<ChatPageWithRoom>
 }
 
 enum AddPopupMenuActions {
-  media,
+  image,
+  video,
   file,
   poll,
   photoCamera,
